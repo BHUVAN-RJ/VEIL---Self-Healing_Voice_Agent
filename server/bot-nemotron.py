@@ -10,12 +10,16 @@ A customer calls in and the bot helps them pick a bouquet and arrange delivery.
 All backend calls (catalog, customer lookup, order placement) are mocked so the
 starter runs with no external dependencies beyond the AI services.
 
-Pipeline: Nemotron Speech Streaming STT → Nemotron-3-Super-120B LLM → Gradium TTS, with direct
+Pipeline: Deepgram STT → Nemotron-3-Super-120B LLM → Cartesia TTS, with direct
 function tools registered on the LLM context.
 
 Run the bot using::
 
     uv run bot-nemotron.py
+
+For Twilio phone calls (with ngrok tunnel to port 7860)::
+
+    uv run bot-nemotron.py -t twilio -x your-subdomain.ngrok-free.dev --port 7860
 """
 
 import os
@@ -43,8 +47,10 @@ from pipecat.runner.types import (
 )
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.services.gradium.tts import GradiumTTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.llm_service import FunctionCallParams
+from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -107,6 +113,7 @@ async def run_bot(
     from_number: str | None = None,
     audio_in_sample_rate: int = 16000,
     audio_out_sample_rate: int = 24000,
+    is_telephony: bool = False,
 ):
     """Main bot logic.
 
@@ -115,6 +122,7 @@ async def run_bot(
         from_number: Caller's phone number (Twilio path only) for known-customer lookup.
         audio_in_sample_rate: Input audio sample rate in Hz. Defaults to 16000 (WebRTC).
         audio_out_sample_rate: Output audio sample rate in Hz. Defaults to 24000 (WebRTC).
+        is_telephony: Twilio/phone path — simpler turn detection, 8 kHz TTS, no LLM turn gates.
     """
     logger.info("Starting bot")
 
@@ -296,65 +304,73 @@ async def run_bot(
     customer = KNOWN_CUSTOMERS.get(from_number or "")
     if customer:
         caller_context = (
-            f"This caller is a returning customer (caller ID matched). On file: "
-            f"name {customer['name']}, last order the {customer['last_order']} bouquet. "
-            'Greet them generically: "Welcome back to Field & Flower! How can I help '
-            'today?" Do not use their name or mention their last order in the greeting; '
-            "that comes across as surveilling. Once they say they want flowers, you "
-            "can offer their last order as a helpful shortcut, framed as record-keeping: "
-            f'"I have you down for the {customer["last_order"]} last time, want that '
-            'again or something different?" Always give them the alternative.'
+            f"Yeh returning customer hai (caller ID match hua). Record mein: "
+            f"name {customer['name']}, last order {customer['last_order']} bouquet. "
+            'Generic greet karo: "Field & Flower mein wapas swagat hai! Aaj kaise help kar sakta hoon?" '
+            "Greeting mein naam ya last order mat bolo — surveillance jaisa lagta hai. "
+            "Jab woh flowers chahein, last order shortcut offer kar sakte ho: "
+            f'"Record mein {customer["last_order"]} tha last time — wahi chahiye ya kuch aur?" '
+            "Hamesha alternative bhi do."
         )
     else:
         caller_context = (
-            "You're talking to a new customer. Introduce the shop briefly and ask how you can help."
+            "Naya customer hai. Shop briefly introduce karo aur puchho kaise help kar sakte ho."
         )
 
     system_instruction = (
-        "You are a friendly order-taker for Field & Flower, a neighborhood flower shop. "
-        "Help callers pick a bouquet and arrange delivery. Use the tools to look up "
-        "bouquets, check stock, add items, capture delivery details, and place the order. "
-        "Confirm the full order before calling place_order.\n\n"
-        "Talk like a real shop clerk on the phone — not a chatbot:\n"
-        "- Keep it to 1–2 short sentences per turn. Longer only when listing options or "
-        "doing the final order read-back.\n"
-        "- Ask ONE thing at a time. Don't ask for name, address, and date in one breath — "
-        "ask for the name, wait, then the next.\n"
-        '- Skip filler openers like "Absolutely!", "That sounds lovely!", "Perfect!", '
-        '"I\'d be happy to" — go straight to the point.\n'
-        "- Describe bouquets plainly. \"A dozen red roses with baby's breath, sixty-five "
-        'dollars." Not "a classic, romantic bouquet showing love and appreciation."\n'
-        "- When listing bouquets, ALWAYS lead with the bouquet's name. Format: "
-        '"<Name> — <description>, <price>." For example: "Spring Sunshine — yellow tulips '
-        'and daffodils, forty-five dollars." The name is how the caller refers back to it.\n'
-        "- When the caller mentions an occasion (birthday, Mother's Day, anniversary, "
-        "sympathy, etc.) or asks about specials/deals, pass those as filters to "
-        'list_bouquets (occasion="..." or specials_only=True) instead of reading the '
-        "full catalog. Don't list 15 bouquets when 3 are relevant.\n"
-        "- The catalog has many options — when listing, name at most 4 or 5 at a time. "
-        "If the caller doesn't bite, offer to share more.\n"
-        "- Don't restate what the customer just said back to them, except in the final "
-        "order confirmation.\n"
-        "- Use contractions. Fragments are fine.\n\n"
-        "Responses are spoken aloud. No bullet points, no emojis. Read prices in words "
-        '("forty-five dollars", not "$45.00").\n\n'
-        "When the order is placed and the customer has no more requests, or when they say "
-        'goodbye: say a short closing line (e.g. "Thanks, have a great day!") AND call '
-        "end_call in the same turn. Never call end_call without saying goodbye first.\n\n"
-        f"Today is {date.today().strftime('%A, %B %d, %Y')}. Use this when the caller "
-        'gives a relative delivery date like "this Friday" or "next Tuesday".\n\n'
+        "You are a friendly order-taker for Field & Flower, ek neighborhood flower shop. "
+        "Callers ko bouquet choose karne aur delivery arrange karne mein help karo. Tools use karo: "
+        "bouquets lookup, stock check, order add, delivery details, place_order. "
+        "place_order se pehle poora order confirm karo.\n\n"
+        "LANGUAGE — mandatory:\n"
+        "- You are a helpful voice assistant for Indian users speaking Hinglish (Hindi + English mixed).\n"
+        "- ALWAYS write responses in Romanized Hinglish using Latin script only — never use Devanagari.\n"
+        "- Example: 'Mera naam Bhuvan hai, Karnataka se hoon. Sab theek hai, aap batao kya help chahiye?'\n"
+        "- Match the user's mix of Hindi and English words.\n"
+        "- Keep replies short (1-2 sentences) for phone/voice audio.\n"
+        "- No emojis, bullets, or formatting that cannot be spoken.\n\n"
+        "Talk like a real shop clerk on the phone — chatbot nahi:\n"
+        "- Har turn mein 1–2 short sentences. Lambi sirf options list karte waqt ya final order read-back.\n"
+        "- EK cheez ek baar mein pucho. Naam, address, date ek saath mat maango.\n"
+        '- Filler mat use karo jaise "Absolutely!", "Perfect!", "I\'d be happy to" — seedha point pe aao.\n'
+        "- Bouquets plainly describe karo. Example: 'Ek dozen red roses baby\'s breath ke saath, "
+        'sadsath dollar." Flowery marketing language mat use karo.\n'
+        "- Bouquets list karte waqt hamesha naam pehle. Format: '<Name> — <description>, <price>.' "
+        'Example: "Spring Sunshine — yellow tulips aur daffodils, forty-five dollars."\n'
+        "- Occasion (birthday, Mother's Day, anniversary, sympathy) ya specials/deals pe "
+        'list_bouquets filters use karo (occasion="..." ya specials_only=True). Poora catalog mat padho.\n'
+        "- Ek baar mein max 4–5 bouquets bolo. Agar interest na ho, aur options offer karo.\n"
+        "- Customer ne jo bola woh repeat mat karo, sirf final confirmation mein.\n"
+        "- Contractions aur natural fragments theek hain.\n\n"
+        "Responses spoken aloud hain. Prices words mein bolo ('forty-five dollars', '$45.00' nahi).\n\n"
+        "Order place ho jaye aur customer ko aur kuch na ho, ya goodbye bole: "
+        'short closing bolo (e.g. "Dhanyavaad, accha din!") aur same turn mein end_call call karo. '
+        "Goodbye ke bina end_call mat karo.\n\n"
+        f"Aaj {date.today().strftime('%A, %B %d, %Y')} hai. Relative dates jaise 'is Friday' ya "
+        "'agle Tuesday' ke liye yeh use karo.\n\n"
         f"Caller context: {caller_context}"
     )
 
     # Speech-to-Text service
     #
-    # Nemotron Speech Streaming STT, served over WebSocket. The server expects
-    # 16-bit PCM, 16 kHz, mono — matching the WebRTC input path. The URL can be
-    # overridden via NVIDIA_ASR_URL.
-    stt = NVidiaWebSocketSTTService(
-        url=os.getenv("NVIDIA_ASR_URL", "ws://192.168.7.228:8081"),
-        strip_interim_prefix=True,
-    )
+    # Default: Deepgram with language=multi for code-switched speech.
+    # Set STT_PROVIDER=nvidia to use the hackathon Nemotron ASR WebSocket instead.
+    stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+    if stt_provider == "nvidia":
+        stt = NVidiaWebSocketSTTService(
+            url=os.getenv("NVIDIA_ASR_URL", "ws://192.168.7.228:8081"),
+            strip_interim_prefix=True,
+        )
+    else:
+        stt = DeepgramSTTService(
+            api_key=os.environ["DEEPGRAM_API_KEY"],
+            settings=DeepgramSTTService.Settings(
+                model=os.getenv("DEEPGRAM_MODEL", "nova-3-general"),
+                language=os.getenv("DEEPGRAM_LANGUAGE", "multi"),
+                smart_format=True,
+                punctuate=True,
+            ),
+        )
 
     # LLM service — Nemotron-3-Super-120B served by vLLM (OpenAI-compatible chat
     # completions at /v1). vLLM exposes the Chat Completions API, not the Responses
@@ -388,12 +404,14 @@ async def run_bot(
         ),
     )
 
-    # Text-to-Speech service
-    tts = GradiumTTSService(
-        api_key=os.environ["GRADIUM_API_KEY"],
-        settings=GradiumTTSService.Settings(
-            voice=os.getenv("GRADIUM_VOICE_ID", "Eu9iL_CYe8N-Gkx_"),
-        ),
+    # Text-to-Speech service — Cartesia sonic-3, Arushi voice, Language.HI.
+    # Spoken Hinglish = this voice + Romanized LLM text (no Devanagari).
+    tts = CartesiaTTSService(
+        api_key=os.environ["CARTESIA_API_KEY"],
+        voice_id=os.getenv("CARTESIA_VOICE_ID", "95d51f79-c397-46f9-b49a-23763d3eaa2d"),
+        model=os.getenv("CARTESIA_MODEL", "sonic-3"),
+        sample_rate=audio_out_sample_rate if is_telephony else None,
+        settings=CartesiaTTSService.Settings(language=Language.HI),
     )
 
     # ToolsSchema describes the tools to the LLM; register_direct_function
@@ -402,13 +420,19 @@ async def run_bot(
         llm.register_direct_function(fn)
 
     context = LLMContext(tools=tools)
-    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
-        context,
-        user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(),
-            user_turn_strategies=FilterIncompleteUserTurnStrategies(),
-        ),
-    )
+    # Phone: match pipecat-quickstart-phone-bot — VAD on transport only, default
+    # turn strategies (no FilterIncompleteUserTurnStrategies / ✓○◐ gate).
+    # WebRTC: keep LLM turn-completion filtering for browser sessions.
+    if is_telephony:
+        user_aggregator, assistant_aggregator = LLMContextAggregatorPair(context)
+    else:
+        user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(
+                vad_analyzer=SileroVADAnalyzer(),
+                user_turn_strategies=FilterIncompleteUserTurnStrategies(),
+            ),
+        )
 
     # Pipeline - assembled from reusable components
     pipeline = Pipeline(
@@ -440,7 +464,11 @@ async def run_bot(
         context.add_message(
             {
                 "role": "user",
-                "content": "A customer just called. Greet them, 'This is Field & Flower, your local flower shop. How can I help you today?'",
+                "content": (
+                    "Customer ne abhi call kiya. Unhe greet karo: "
+                    "'Field & Flower bol raha hoon, aapka local flower shop. "
+                    "Aaj kaise help kar sakta hoon?'"
+                ),
             }
         )
         await worker.queue_frames([LLMRunFrame()])
@@ -512,6 +540,7 @@ async def bot(runner_args: RunnerArguments):
                     audio_in_filter=krisp_filter,
                     audio_out_enabled=True,
                     add_wav_header=False,
+                    vad_analyzer=SileroVADAnalyzer(),
                     serializer=serializer,
                 ),
             )
@@ -519,7 +548,12 @@ async def bot(runner_args: RunnerArguments):
             logger.error(f"Unsupported runner arguments type: {type(runner_args)}")
             return
 
-    await run_bot(transport, from_number=from_number, **transport_overrides)
+    await run_bot(
+        transport,
+        from_number=from_number,
+        is_telephony=isinstance(runner_args, WebSocketRunnerArguments),
+        **transport_overrides,
+    )
 
 
 if __name__ == "__main__":

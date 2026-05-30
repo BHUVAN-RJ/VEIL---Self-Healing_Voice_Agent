@@ -1,5 +1,5 @@
-agent_name = "flower-bot"
-secret_set = "flower-bot-secrets"
+agent_name = "sharma-bot"
+secret_set = "sharma-bot-secrets"
 agent_profile = "agent-1x"
 
 [krisp_viva]

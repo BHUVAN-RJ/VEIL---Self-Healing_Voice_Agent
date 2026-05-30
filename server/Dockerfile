@@ -6,9 +6,6 @@ ENV UV_COMPILE_BYTECODE=1
 # Copy from the cache instead of linking since it's a mounted volume
 ENV UV_LINK_MODE=copy
 
-# Uncomment if you wish to print a summary of the features available in the base image
-# ENV PCC_LOG_FEATURES_SUMMARY=true
-
 # Install the project's dependencies using the lockfile and settings
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
@@ -16,5 +13,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project --no-dev
 
 # Copy the application code
-COPY ./bot.py bot.py
-COPY ./mock_backend.py mock_backend.py
+COPY ./bot-sharma.py bot-sharma.py
+COPY ./nemotron_llm.py nemotron_llm.py
+COPY ./call_classifier.py call_classifier.py
+COPY ./call_logging.py call_logging.py
+COPY ./text_spacing.py text_spacing.py
+COPY ./response_guard.py response_guard.py
+COPY ./nvidia_stt.py nvidia_stt.py

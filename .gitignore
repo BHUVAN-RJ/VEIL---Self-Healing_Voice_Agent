@@ -218,6 +218,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Call logs (Mrs. Sharma scam screener)
+server/logs/
+
 # Node.js (client/)
 
 # Local reference checkout of pipecat source (read-only; runtime uses the
