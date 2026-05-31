@@ -8,7 +8,7 @@ Built for the **YC Voice Agents Hackathon** (Cekura · Daily · NVIDIA · AWS ·
 
 **[▶ Watch the demo video](https://drive.google.com/drive/folders/1GH1yjzbPZAl8yJdalQ9TLD1AR60dzs9Q?usp=sharing)**
 
-Hackathon submission: `[SUBMISSION LINK: TO ADD]`
+Hackathon submission: <https://github.com/BHUVAN-RJ/VEIL---Self-Healing_Voice_Agent>
 
 ---
 
