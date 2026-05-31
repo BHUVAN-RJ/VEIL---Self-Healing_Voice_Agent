@@ -1,238 +1,201 @@
-# YC Voice Agents Hackathon
+# Veil — a self-healing scam-screening voice agent
 
-Welcome to the YC Voice Agents Hackathon, hosted by [Cekura](https://cekura.com) and [Daily](https://daily.co), in partnership with [NVIDIA](https://nvidia.com), [AWS](https://aws.amazon.com), and [Twilio](https://twilio.com).
+> Veil answers the calls your grandparents shouldn't have to. It picks up unknown numbers as a calm, slightly hard-of-hearing Pune aunty who speaks Hinglish, stays warm with real callers, and quietly stonewalls scammers — never handing over an OTP, Aadhaar, or rupee. After every call it classifies the risk and flags the family.
 
-The goal of this event is to learn about building, scaling, evaluating, and continuously improving voice agents.
+Built for the **YC Voice Agents Hackathon** (Cekura · Daily · NVIDIA · AWS · Twilio) on [Pipecat](https://pipecat.ai).
 
-## Schedule, rules, and prizes
+## 🎥 Demo
 
-This is a one-day event. Please arrive by 8:30. We'll kick things off at 9:00.
+**[▶ Watch the demo video](https://drive.google.com/drive/folders/1GH1yjzbPZAl8yJdalQ9TLD1AR60dzs9Q?usp=sharing)**
 
-### Schedule
+Hackathon submission: `[SUBMISSION LINK: TO ADD]`
 
-  - 8:00 AM – Doors open & registration
-  - 8:30 AM – Breakfast
-  - 9:00 AM – Welcome / Hackathon begins
-  - 12:00 PM – Lunch
-  - 6:00 PM – Submissions due
-  - 6:00 - 8:00 PM – Dinner, demos, and conversation
-  - 8:00 PM – Judges' presentations
-  - 9:00 PM – We all go home
+---
 
-### General guidance
+## The problem
 
-First of all, please respect the YC space. We very much appreciate YC hosting these events. Stay in the designated areas, clean up after meals, and in general be a good guest.
+Phone scams disproportionately target the elderly: fake "bank fraud" alerts, "digital arrest" threats from people posing as CBI/police, KYC-expiry traps, and family-emergency cons. The ask is always the same — an OTP, an Aadhaar number, a UPI transfer, or "install this app." A confused 68-year-old on the spot is the perfect victim.
 
-Build something new for this hackathon. Use the tools from Cekura to evaluate and improve the performance of what you build. Use Pipecat as the orchestration framework for your voice agent. We also encourage you to use the open source models from NVIDIA, but it's okay to use any models that work well for your project.
+**Veil is a screening layer that picks up first.** It behaves like a real, slightly slow Pune resident, so:
 
-There will be engineers from Cekura, Daily, NVIDIA, AWS, and Twilio available to help you with your project. Don't hesitate to find us.
+- **Legitimate callers** (a bank confirming a blocked transaction, a clinic, a delivery) have a normal short conversation and get politely wrapped up.
+- **Scammers** get a warm, curious, time-wasting target who never reveals anything sensitive — and the moment intent is clear, Veil disengages and hangs up.
+- **The family** gets a post-call summary whenever a call looks risky.
 
-Judging will start at 6:00. In general, the judges want to showcase interesting projects rather than just pick winners. So don't worry too much about what the judges are looking for in a project. Build something that demonstrates creativity, is interesting on a technical level, or solves a real problem! But do keep in mind that the judges want to see great examples of using Cekura to improve voice agent performance, and using open source models from NVIDIA.
+---
 
+## What makes it "self-healing"
 
-# Tech stack and starting points.
+Veil heals itself at two levels — once per reply at runtime, and once per iteration during development.
 
-This repo contains two versions of a voice agent built with [Pipecat](https://pipecat.ai).
+### 1. Runtime self-healing — the Response Guard
 
-The demo bot **Field & Flower** is a neighborhood flower shop: callers order a bouquet for delivery while the bot looks up the catalog, captures delivery details, and places the order. All backend calls are mocked, so the starter runs with nothing but AI service keys.
+A small LLM like Nemotron streams imperfect output: glued Hinglish tokens, over-long rambles, occasional unsafe or over-defensive lines. Rather than trust raw model text, every reply passes through a **response guard** (`server/response_guard.py` + `server/text_spacing.py`) that repairs it *before it reaches the caller*:
 
-## Version 1 — GPT-4.1
+- **Fixes Hinglish spacing** so the TTS speaks `Achha Priya ji, batao kya baat hai?` instead of syllable-shattered `Ach ha Pri ya ji…`.
+- **Caps length** to one short, human sentence (no monologues).
+- **Blocks self-sabotage** — strips replies where Veil would leak suspicion, ask for badge/employee IDs on a normal call, or otherwise break character.
+- **Rescues dead-ends** — rewrites passive "theek hai, dhanyavaad" replies into a curious follow-up when the caller just raised something real.
+- **Decides when to end the call** (see below), deterministically, so a flaky model can't strand the line.
 
-You can start with this before the hackathon, if you want to. Or test GPT-4.1 and Nemotron side-by-side during the hackathon, using Cekura.
+### 2. Eval-driven self-healing — the Cekura loop
 
-This bot only requires a Gradium API key and an OpenAI API key. Sign up for free at [Gradium](https://gradium.ai). We'll provide a code for Gradium credits, during the event.
+We treated [Cekura](https://cekura.com) as the test harness: generate adversarial scenarios (digital-arrest, fake bank fraud, KYC expiry, family emergency, plus benign calls), run them against the live Pipecat agent, read the failures, patch the prompt/guard, and re-run. Each pass tightened behavior.
 
-- **STT:** [Gradium](https://gradium.ai)
-- **LLM:** [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) (GPT-4.1)
-- **TTS:** [Gradium](https://gradium.ai)
-- **Transports:** SmallWebRTC (local dev) and [Twilio](https://www.twilio.com/en-us) (production telephony)
-- **Deploy target:** [Pipecat Cloud](https://pipecat.daily.co)
+| Cekura run | Result | What we fixed |
+|---|---|---|
+| Baseline | **5 / 11** | Over-defensive on legit calls, leaked verification asks, rambled |
+| Iteration 1 | **11 / 11** | Conditional engagement (curious on legit, defensive on scam), brevity cap |
+| Expanded suite | **15 / 16** | New edge cases; one wrap-up/hang-up miss |
+| Final | **16 / 16** | Confirm-once closing + reliable scam hang-up |
 
-## Version 2
+---
 
-NVIDIA models hosted on AWS, available during the hackathon.
+## How a call flows
 
 ```
-  export NVIDIA_ASR_URL=ws://44.241.251.184:8080
-  export NEMOTRON_LLM_URL=http://nemotron-fleet-alb-1322439314.us-west-2.elb.amazonaws.com/v1
-  export NEMOTRON_LLM_MODEL=nvidia/nemotron-3-super
-  ```
+ Caller ──▶ Twilio / WebRTC ──▶ STT ──▶ Nemotron LLM ──▶ Response Guard ──▶ Cartesia TTS ──▶ Caller
+                                                              │
+                                                  (repairs + safety + end-call)
+                                                              │
+                              ┌───────────────────────────────┘
+                              ▼
+                on disconnect: classify risk ─▶ notify family if medium/high ─▶ write JSON call log
+```
 
-- **STT:** [Nemotron Speech Streaming](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
-- **LLM:** [Nemotron 3 Super 120B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16)
-- **TTS:** [Gradium](https://gradium.ai)
-- **Transports:** SmallWebRTC (local dev) and Twilio (production telephony)
-- **Deploy target:** [Pipecat Cloud](https://pipecat.daily.co)
+- **Greeting:** Veil answers with a short, neutral *"Hello, kaun bol raha hai?"*
+- **Conditional engagement:** warm and curious with legit callers; defensive (one verification question or a polite refusal, never sensitive data) the moment scam patterns appear.
+- **Closing a legit call:** when the caller signals they're done, Veil confirms **once** — *"Theek hai, aur kuch batana tha?"* — and on a "no," says a brief goodbye and hangs up automatically.
+- **Ending a scam call:** once there's strong proof (an unambiguous OTP/Aadhaar/arrest/link demand, or repeated pushing), Veil drops a firm sign-off and disconnects — no polite confirmation.
+- **Post-call (always):** a Nemotron classifier (`server/call_classifier.py`) scores the transcript for scam signals → `risk_level` + `recommended_action`; medium/high risk triggers a family notification, and every call is written to a JSON log (`server/call_logging.py`) for Cekura review.
 
-## Develop locally
+---
 
-Get the bot running over WebRTC in your browser before you push to the cloud or wire up the phone, for a faster iteration loop.
+## Tech stack
+
+| Layer | Choice |
+|---|---|
+| Orchestration | [Pipecat](https://pipecat.ai) |
+| STT | [Deepgram](https://deepgram.com) `nova-3` (multilingual Hinglish), or NVIDIA Nemotron streaming ASR |
+| LLM | [NVIDIA Nemotron-3-Super](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16) (vLLM, OpenAI-compatible) |
+| TTS | [Cartesia](https://cartesia.ai) `sonic-3`, Hindi/Hinglish voice |
+| Transports | SmallWebRTC (local browser) · [Twilio](https://twilio.com) (telephony) |
+| Deploy | [Pipecat Cloud](https://pipecat.daily.co) |
+| Eval | [Cekura](https://cekura.com) |
+
+---
+
+## Repository layout
+
+```
+.
+├── README.md
+└── server/
+    ├── bot-sharma.py          # Veil — main agent (pipeline, tools, call lifecycle)
+    ├── response_guard.py      # runtime self-healing: sanitize + safety + end-call
+    ├── text_spacing.py        # Hinglish token-stream spacing repair
+    ├── call_classifier.py     # post-call scam-risk classification (Nemotron)
+    ├── call_logging.py        # JSON call logs + family notifications
+    ├── nemotron_llm.py        # Nemotron LLM service wrapper (TTFB metrics)
+    ├── nvidia_stt.py          # NVIDIA streaming ASR client
+    ├── bot-nemotron.py        # alt bot (Nemotron starter)
+    ├── bot-gpt.py             # alt bot (GPT-4.1 / Gradium starter)
+    ├── live_transcript.py     # dev helper: clean live transcript from server logs
+    ├── test_*.py              # unit + scenario tests
+    ├── .env.example           # required env vars (placeholders only)
+    └── pcc-deploy.toml        # Pipecat Cloud deploy config
+```
+
+> The Veil agent is implemented in `server/bot-sharma.py` (the filename is a leftover from the persona's surname; the product is **Veil**).
+
+---
+
+## Run it locally
+
+Talk to Veil over WebRTC in your browser before wiring up the phone.
 
 ### Prerequisites
 
 - Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/getting-started/installation/) package manager
-- API keys for [OpenAI](https://platform.openai.com) and [Gradium](https://gradium.ai)
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+- API keys for Deepgram (STT) and Cartesia (TTS); access to a Nemotron LLM endpoint
 
 ### Setup
 
-1. **Clone and enter the server directory:**
-
-   ```bash
-   git clone https://github.com/pipecat-ai/yc-voice-agents-hackathon.git
-   cd yc-voice-agents-hackathon/server
-   ```
-
-2. **Configure API keys:**
-
-   ```bash
-   cp .env.example .env
-   # Edit .env and fill in OPENAI_API_KEY, GRADIUM_API_KEY.
-   # TWILIO_* keys are only needed when you wire up the phone (next section).
-   ```
-
-3. **Install dependencies:**
-
-   ```bash
-   uv sync
-   ```
-
-4. **Run the bot:**
-
-   ```bash
-   # run one or the other of these
-   uv run bot-gpt.py
-   uv run bot-nemotron.py
-   ```
-
-   Open [http://localhost:7860](http://localhost:7860) and click **Connect** to start talking. First launch takes ~20s while Pipecat downloads VAD and turn-detection models.
-
-## Deploy to Pipecat Cloud
-
-Once the bot works locally, deploy to Pipecat Cloud and connect it to a Twilio phone number so anyone can call in.
-
-### Prerequisites
-
-1. [Sign up for Pipecat Cloud](https://pipecat.daily.co/sign-up)
-2. Install the [Pipecat CLI](https://github.com/pipecat-ai/pipecat-cli) and log in:
-
-   ```bash
-   uv tool install pipecat-ai-cli
-   pc cloud auth login
-   ```
-
-### Configure Twilio
-
-1. [Add credits / upgrade your Twilio account](https://twil.io/yc-hack)
-
-2. [Buy a phone number](https://help.twilio.com/articles/223135247) with voice capability.
-
-3. Get your Pipecat Cloud organization name:
-
-   ```bash
-   pc cloud organizations list
-   ```
-
-4. [Create a TwiML Bin](https://www.twilio.com/docs/serverless/twiml-bins/getting-started#create-a-new-twiml-bin) with this configuration:
-
-   ```xml
-   <?xml version="1.0" encoding="UTF-8"?>
-   <Response>
-     <Connect>
-       <Stream url="wss://api.pipecat.daily.co/ws/twilio">
-         <Parameter name="_pipecatCloudServiceHost"
-           value="flower-bot.YOUR_ORG_NAME"/>
-       </Stream>
-     </Connect>
-   </Response>
-   ```
-
-   Replace `YOUR_ORG_NAME` with the org name from step 2.
-
-5. [Attach the TwiML Bin](https://www.twilio.com/docs/serverless/twiml-bins/getting-started#wire-your-twiml-bin-up-to-an-incoming-phone-call) to your Twilio number: Go to [your phone numbers](https://console.twilio.com/go?to=/account/__account__/us1/senders-hub/list/phone-numbers/inventory) → select your
-number → under **Voice Configuration**, set method to the **TwiML Bin** you created → Save.
-
-6. [Optional] Use [Twilio Dev phone](https://www.twilio.com/docs/labs/dev-phone) for testing.
-
-### Review the deployment configuration
-
-Your deployment details are specified in the `pcc-deploy.toml` file. You can learn more about options in the [docs](https://docs.pipecat.ai/api-reference/cli/cloud/deploy#configuration-file-pcc-deploy-toml).
-
-### Upload secrets
-
 ```bash
-pc cloud secrets set flower-bot-secrets --file .env
+git clone https://github.com/BHUVAN-RJ/VEIL---Self-Healing_Voice_Agent.git
+cd VEIL---Self-Healing_Voice_Agent/server
+
+cp .env.example .env
+# Fill in the values in .env (see "Environment variables" below).
+
+uv sync
 ```
 
-This uploads everything from `.env` to Pipecat Cloud's secure storage. The bot reads from there at runtime, so you don't bake keys into the image.
-
-### Deploy
-
-Build and run your bot on Pipecat Cloud:
+### Start the agent
 
 ```bash
+uv run bot-sharma.py
+```
+
+Open [http://localhost:7860](http://localhost:7860) and click **Connect** to start talking. First launch takes ~20s while Pipecat downloads VAD and turn-detection models.
+
+### Watch a live transcript (optional)
+
+While the bot runs, stream a clean, de-noised transcript of the conversation:
+
+```bash
+uv run live_transcript.py <path-to-the-bot's-terminal-log>
+```
+
+### Run the tests
+
+```bash
+uv run python test_text_spacing.py
+uv run python test_response_guard.py
+uv run python test_sharma_scenarios.py   # live scenario tests (needs LLM endpoint)
+```
+
+---
+
+## Take phone calls (Twilio)
+
+Expose port 7860 with an ngrok tunnel and run in Twilio mode:
+
+```bash
+uv run bot-sharma.py -t twilio -x your-subdomain.ngrok-free.dev --port 7860
+```
+
+Point a Twilio number's voice webhook at your tunnel (TwiML `<Connect><Stream>`), then call the number. For a managed deployment, push to **Pipecat Cloud** using `server/pcc-deploy.toml`:
+
+```bash
+pc cloud secrets set <secret-set> --file .env
 pc cloud deploy
 ```
 
-Learn more about [cloud builds](https://docs.pipecat.ai/pipecat-cloud/guides/cloud-builds).
+---
 
-### Call your bot
+## Environment variables
 
-Dial the Twilio number you set up. 🌷
+Copy `server/.env.example` to `server/.env` and fill in real values. **Never commit `.env`** — it's gitignored.
 
-## Test your agent with Cekura
+| Variable | Purpose |
+|---|---|
+| `NEMOTRON_LLM_URL` | Nemotron LLM endpoint (OpenAI-compatible base URL) |
+| `NEMOTRON_LLM_MODEL` | Model name, e.g. `nvidia/nemotron-3-super` |
+| `NEMOTRON_LLM_API_KEY` | API key for the endpoint (`EMPTY` for open vLLM) |
+| `DEEPGRAM_API_KEY` | Deepgram STT |
+| `DEEPGRAM_MODEL` / `DEEPGRAM_LANGUAGE` | STT model / language (`nova-3-general` / `multi`) |
+| `CARTESIA_API_KEY` | Cartesia TTS |
+| `CARTESIA_VOICE_ID` / `CARTESIA_MODEL` | Voice + model (`sonic-3`) |
+| `STT_PROVIDER` | `deepgram` (default) or `nvidia` |
+| `NVIDIA_ASR_URL` | NVIDIA streaming ASR (only if `STT_PROVIDER=nvidia`) |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio (phone transport + call metadata) |
+| `TWILIO_PROXY` | Public ngrok hostname for Twilio media streams |
+| `ENV` | `local` to disable the Krisp noise filter during local dev |
 
-[Cekura](https://cekura.com) tests and observes voice agents. For this hackathon, use it to **test the Pipecat bot you build in this repo** — run real conversations against it, score the transcripts, and fix what's failing before you demo.
+---
 
-### Sign up
+## Acknowledgements
 
-Create your account at **[dashboard.cekura.ai](https://dashboard.cekura.ai)**. If you're approved for this hackathon, just sign up and your credits will show up automatically. If you don't see them, find someone from the Cekura team, they're on-site.
-
-### Onboarding (or skip it)
-
-On first login you'll land on a short setup flow that helps you create your first agent and test. Feel free to click through it — **or hit _Skip_** and jump straight to the dashboard if you'd rather set things up yourself. Either way takes a minute.
-
-### Recommended: start by testing your agent (via Claude Code)
-
-The fastest path — and what we recommend for the hackathon — is to drive Cekura from **Claude Code** using our MCP server + skills. You stay in your terminal, and Cekura handles agent creation, scenario generation, and running the test.
-
-**1. Install the Cekura skills + MCP** (Claude Code marketplace plugin — bundles the skills, slash commands, and auto-configured MCP server):
-
-```bash
-/plugin marketplace add cekura-ai/cekura-skills
-/plugin install cekura@cekura-skills
-```
-
-Repo: [github.com/cekura-ai/cekura-skills](https://github.com/cekura-ai/cekura-skills) · Full setup + other agents (Cursor, Codex, etc.): **[docs.cekura.ai → Claude Code guide](https://docs.cekura.ai/mcp/claude-code-guide)** and **[Skills](https://docs.cekura.ai/mcp/skills)**.
-
-**2. Run an end-to-end test** of your agent with a single command:
-
-```
-/cekura-report
-```
-
-This spins up anything from 10–20 evaluators (what Cekura calls test cases), runs scenarios against your Pipecat agent, and gives you back a full report — transcripts, scores, and what failed — so you can iterate fast.
-
-> When connecting your agent, **select `Pipecat` as the provider.** Details: [docs.cekura.ai → Pipecat](https://docs.cekura.ai/documentation/integrations/pipecat/automated).
-
-## Learn more
-
-### Pipecat
-
-- [Pipecat Documentation](https://docs.pipecat.ai/)
-- [Pipecat Cloud Deployment](https://docs.pipecat.ai/pipecat-cloud/introduction)
-- [Pipecat Examples](https://github.com/pipecat-ai/pipecat-examples)
-- [Pipecat Discord](https://discord.gg/pipecat)
-
-### Twilio
-
-- [Twilio Developer Hub](https://www.twilio.com/en-us/developers)
-- [Twilio Documentation](https://www.twilio.com/docs)
-- [Twilio Dev phone](https://www.twilio.com/docs/labs/dev-phone)
-
-### Cekura
-
-- [Claude Code guide](https://docs.cekura.ai/mcp/claude-code-guide) — MCP + skills setup
-- [Cekura skills](https://docs.cekura.ai/mcp/skills) — all slash commands
-- [Pipecat integration](https://docs.cekura.ai/documentation/integrations/pipecat/automated)
-- [Cekura docs](https://docs.cekura.ai) · [dashboard](https://dashboard.cekura.ai)
+Built on the [Pipecat](https://pipecat.ai) framework and the YC Voice Agents Hackathon starter, with NVIDIA Nemotron models, Deepgram, Cartesia, Twilio, and evaluated with [Cekura](https://cekura.com). Thanks to the on-site teams from Daily, NVIDIA, AWS, Twilio, and Cekura.

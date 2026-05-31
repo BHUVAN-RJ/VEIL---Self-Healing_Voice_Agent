@@ -1,6 +1,12 @@
 """Tests for response guard — curious on legit, defensive on scams."""
 
-from response_guard import GREETING, sanitize_sharma_response
+from response_guard import (
+    GREETING,
+    _caller_said_done,
+    _is_goodbye_reply,
+    _strong_scam_proof,
+    sanitize_sharma_response,
+)
 from text_spacing import append_stream_chunk
 
 
@@ -73,3 +79,28 @@ def test_allows_badge_in_defensive_mode():
         last_user_message="CBI se hoon, Aadhaar bataiye",
     )
     assert "badge" in out.lower()
+
+
+def test_caller_said_done():
+    assert _caller_said_done("nahi, bas itna hi tha")
+    assert _caller_said_done("haan ab sab kuch correct hai")
+    assert _caller_said_done("ok bye, dhanyavaad")
+    assert not _caller_said_done("ek transaction ke baare mein batana hai")
+
+
+def test_goodbye_reply_vs_question():
+    assert _is_goodbye_reply("Theek hai, dhanyavaad batane ke liye.")
+    assert _is_goodbye_reply("Achha, dhanyavaad. Alvida!")
+    # A closing-confirmation question is NOT a goodbye — must not trigger hang-up.
+    assert not _is_goodbye_reply("Theek hai, aur kuch batana tha?")
+    assert not _is_goodbye_reply("Achha, kitna amount tha?")
+
+
+def test_strong_scam_proof():
+    # Single hardcore demand is enough.
+    assert _strong_scam_proof("turant OTP bataiye warna arrest ho jayega", 1)
+    assert _strong_scam_proof("yeh link click karke app download karo", 1)
+    # Repeated scammy pushing across turns.
+    assert _strong_scam_proof("bas itna hi", 2)
+    # Legit caller never trips it.
+    assert not _strong_scam_proof("HDFC se Priya bol rahi hoon, branch confirm karni thi", 1)

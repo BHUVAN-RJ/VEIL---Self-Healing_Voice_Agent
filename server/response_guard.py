@@ -12,6 +12,7 @@ import re
 
 from loguru import logger
 from pipecat.frames.frames import (
+    EndTaskFrame,
     Frame,
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
@@ -50,9 +51,54 @@ PASSIVE_REPLY = re.compile(
 MAX_WORDS = 16
 GREETING = "Hello, kaun bol raha hai?"
 
+# Firm sign-off spoken right before hanging up on a confirmed scam call.
+SCAM_SIGNOFF = "Main phone pe kuch nahi dungi, bank jaakar baat karungi. Alvida."
+
+# Caller signalling the call is finished ("no / nothing else / all good").
+CALLER_DONE = re.compile(
+    r"\b(nahi|nai|na+\b|no|nope|bas|bas itna|kuch (aur )?nahi|kuch nahi chahiye|"
+    r"nothing|that'?s all|done|ho gaya|theek hai bye|ok bye|bye|alvida)\b|"
+    r"\bsab (kuch )?(theek|sahi|correct|safe|ho gaya)\b",
+    re.IGNORECASE,
+)
+
+# Mrs. Sharma's reply reads as a goodbye (a closing thanks, not a question).
+GOODBYE_REPLY = re.compile(r"\b(dhanyavaad|alvida|shukriya|bye)\b", re.IGNORECASE)
+
+# Unambiguous, high-confidence scam demands — enough on their own to hang up.
+HARDCORE_SCAM = re.compile(
+    r"\b(otp|aadhaar|upi pin|atm pin|cvv|card number)\b|"
+    r"digital arrest|arrest ho jayega|line mat kaato|don'?t disconnect|"
+    r"abhi.{0,15}(transfer|paise bhej|pay)|turant.{0,15}transfer|"
+    r"(download|install).{0,15}app|app.{0,15}(download|install)|"
+    r"click.{0,15}link|link.{0,15}(click|pe|par|kholo|open)|whatsapp.{0,15}link",
+    re.IGNORECASE,
+)
+
 
 def user_text_signals_scam(text: str) -> bool:
     return bool(SCAM_USER_PATTERNS.search(text))
+
+
+def _caller_said_done(last_user: str) -> bool:
+    """True when the caller indicates there is nothing more to discuss."""
+    return bool(CALLER_DONE.search(last_user or ""))
+
+
+def _is_goodbye_reply(text: str) -> bool:
+    """True when Mrs. Sharma's reply is a closing line, not a follow-up question."""
+    return "?" not in text and bool(GOODBYE_REPLY.search(text))
+
+
+def _strong_scam_proof(last_user: str, scam_signal_count: int) -> bool:
+    """Confident enough that this is a scam to end the call.
+
+    Either the caller has pushed scammy demands across multiple turns, or this
+    single turn contains an unambiguous hard ask (OTP/Aadhaar/arrest/link).
+    """
+    if scam_signal_count >= 2:
+        return True
+    return bool(HARDCORE_SCAM.search(last_user or ""))
 
 
 def _first_sentence(text: str) -> str:
@@ -159,26 +205,53 @@ def sanitize_sharma_response(
 
 
 class ResponseGuardProcessor(FrameProcessor):
-    """Buffer LLM text chunks, sanitize full reply before TTS and UI."""
+    """Buffer LLM text chunks, sanitize full reply, and decide when to end the call."""
 
-    def __init__(self, *, get_defensive_mode, get_last_user_message, **kwargs):
+    def __init__(
+        self,
+        *,
+        get_defensive_mode,
+        get_last_user_message,
+        get_scam_signal_count=None,
+        on_request_end=None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._get_defensive_mode = get_defensive_mode
         self._get_last_user_message = get_last_user_message
+        self._get_scam_signal_count = get_scam_signal_count or (lambda: 0)
+        self._on_request_end = on_request_end
         self._buffer = ""
 
-    async def _flush(self, direction: FrameDirection):
+    async def _flush(self, direction: FrameDirection) -> bool:
+        """Push the sanitized reply downstream. Returns True if the call should end."""
         if not self._buffer:
-            return
+            return False
+
+        defensive = self._get_defensive_mode()
+        last_user = self._get_last_user_message()
+        scam_count = self._get_scam_signal_count()
+
         sanitized = sanitize_sharma_response(
             self._buffer,
-            defensive_mode=self._get_defensive_mode(),
-            last_user_message=self._get_last_user_message(),
+            defensive_mode=defensive,
+            last_user_message=last_user,
         )
+
+        end_call = False
+        if _strong_scam_proof(last_user, scam_count):
+            # Confirmed scam: firm sign-off (no polite "anything else?"), then hang up.
+            sanitized = SCAM_SIGNOFF
+            end_call = True
+        elif _is_goodbye_reply(sanitized) and _caller_said_done(last_user):
+            # Legit wrap-up: caller is done and Mrs. Sharma just said her goodbye.
+            end_call = True
+
         if sanitized != self._buffer:
             logger.info(f"Response guard: {self._buffer!r} → {sanitized!r}")
         await self.push_frame(LLMTextFrame(sanitized), direction)
         self._buffer = ""
+        return end_call
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -191,7 +264,16 @@ class ResponseGuardProcessor(FrameProcessor):
             self._buffer = append_stream_chunk(self._buffer, frame.text or "")
             return
 
+        end_call = False
         if isinstance(frame, LLMFullResponseEndFrame):
-            await self._flush(direction)
+            end_call = await self._flush(direction)
 
         await self.push_frame(frame, direction)
+
+        if end_call:
+            # Goodbye text + LLMFullResponseEndFrame are already queued downstream, so
+            # TTS plays the sign-off before the pipeline tears down.
+            logger.info("Response guard: ending call after goodbye")
+            if self._on_request_end is not None:
+                self._on_request_end()
+            await self.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
