@@ -16,7 +16,7 @@ The agent plays a middle-aged Pune professional. She picks up unknown calls, eng
 
 ## 2. Demo video
 
-<https://drive.google.com/drive/folders/1GH1yjzbPZAl8yJdalQ9TLD1AR60dzs9Q?usp=sharing>
+<https://drive.google.com/drive/folders/1GH1yjzbPZAl8yJdalQ9TLD1ARdzs9Q?usp=sharing>
 
 ## 3. How I used Cekura, Nemotron, and Pipecat
 
